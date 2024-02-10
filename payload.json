@@ -1,0 +1,54 @@
+{
+    "prompt": "{prompt}",
+    "negative_prompt": "(worst quality, low quality, illustration, 3d, 2d, painting, cartoons, sketch), extra fingers, mutated hands, poorly drawn hands, poorly drawn face",
+    "styles": [],
+    "seed": -1,
+    "sampler_name": "DPM++ SDE Karras",
+    "batch_size": 1,
+    "n_iter": 1,
+    "steps": 5,
+    "cfg_scale": 2,
+    "width": "{width}",
+    "height": "{height}",
+    "denoising_strength": 1.0,
+    "processor_res": "{processor_res}",
+    "init_images": ["data:image/jpg;base64,{base64_image}"],
+    "alwayson_scripts": {
+        "controlnet": {
+            "args": [
+                {
+                    "control_mode": "ControlNet is more important",
+                    "enabled": "True",
+                    "guidance_end": 1,
+                    "guidance_start": 0,
+                    "processor_res": "{processor_res}",
+                    "image": {"image": "data:image/jpg;base64,{base64_image}"},
+                    "loopback": "False",
+                    "low_vram": "False",
+                    "model": "diffusers_xl_canny_full [2b69fca4]",
+                    "module": "canny",
+                    "pixel_perfect": "True",
+                    "weight": 1.3,
+                    "threshold_a": 100,
+                    "threshold_b": 225
+                },
+                {
+                    "enabled": "True",
+                    "pixel_perfect": "True",
+                    "control_mode": 0,
+                    "guidance_start": 0.5,
+                    "guidance_end": 1,
+                    "processor_res": "{processor_res}",
+                    "image": {"image": "data:image/jpg;base64,{base64_image}"},
+                    "loopback": "False",
+                    "low_vram": "False",
+                    "model": "ip-adapter-plus-face_sdxl_vit-h [368cf551]",
+                    "module": "ip-adapter_clip_sdxl_plus_vith",
+                    "weight": 1,
+                    "threshold_a": 100,
+                    "threshold_b": 200
+                }
+            ]
+        } 
+    }
+}

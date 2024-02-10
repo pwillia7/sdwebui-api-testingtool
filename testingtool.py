@@ -1,0 +1,149 @@
+import base64
+import requests
+import pandas as pd
+from PIL import Image
+from io import BytesIO
+import subprocess
+import os
+import logging
+from datetime import datetime
+import json
+
+# Setup logging
+logging.basicConfig(filename='api_calls.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def create_timestamped_folder(base_dir="output"):
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    folder_path = os.path.join(base_dir, timestamp)
+    os.makedirs(folder_path, exist_ok=True)
+    return folder_path
+
+def ensure_base64_padding(base64_string):
+    """Ensure the base64-encoded string has correct padding."""
+    missing_padding = len(base64_string) % 4
+    if missing_padding:
+        base64_string += '=' * (4 - missing_padding)
+    return base64_string
+
+def fetch_image_as_base64_and_dimensions(url):
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'}
+    response = requests.get(url, headers=headers)
+    if response.status_code == 200:
+        img = Image.open(BytesIO(response.content))
+        base64_image = base64.b64encode(response.content).decode('utf-8')
+        base64_image = ensure_base64_padding(base64_image)  # Ensure correct padding
+        return base64_image, img.size
+    else:
+        logging.error(f"Failed to fetch image from {url}. Status code: {response.status_code}")
+        return None, None
+
+def prepare_payload(template_path, prompt, width, height, base64_image):
+    with open(template_path) as f:
+        payload = json.load(f)
+    
+    # Explicitly convert numeric values to integers
+    width = int(width)
+    height = int(height)
+    processor_res = int(min(width, height))
+    
+    # Update payload with dynamic values
+    payload['prompt'] = prompt
+    payload['width'] = width
+    payload['height'] = height
+    payload['processor_res'] = processor_res
+    # Ensure base64_image is correctly padded
+    base64_image_padded = ensure_base64_padding(base64_image)
+    payload['init_images'] = [f"data:image/jpeg;base64,{base64_image_padded}"]
+    
+    # Update the 'processor_res' and base64 images in 'controlnet' args
+    for arg in payload['alwayson_scripts']['controlnet']['args']:
+        arg['processor_res'] = processor_res
+        arg['image']['image'] = f"data:image/jpeg;base64,{base64_image_padded}"
+    
+    return payload
+
+def call_api(endpoint, payload):
+    # Call the API and log the status and response, excluding full base64 data for brevity
+    response = requests.post(endpoint, json=payload)
+    if response.status_code == 200:
+        logging.info("API call successful.")
+        return response.json()['images'][0]
+    else:
+        logging.error(f"API call failed with status {response.status_code}: {response.text}")
+        return None
+    
+def execute_bash_command(output_dir, images_with_labels):
+    label_font_size = 200
+    label_background = "#FFF"
+    label_fill = "black"
+    output_file = f"{output_dir}/combined_output.jpg"
+    temp_dir = f"{output_dir}/temp"
+    os.makedirs(temp_dir, exist_ok=True)
+
+    bash_script_content = f"""
+#!/bin/bash
+
+# Create temporary directory for individual montages
+mkdir -p "{temp_dir}"
+
+"""
+    # Loop to create montage commands for each pair
+    for index, ((original_path, generated_path), label) in enumerate(images_with_labels):
+        label_text = label.replace('"', '\\"')  # Escape double quotes in label
+        bash_script_content += f"""
+# Create a montage for original and generated images with label
+montage -font Arial-Black -pointsize {label_font_size} -background '{label_background}' -fill '{label_fill}' \\
+    -label "{label_text}" \\
+    "{original_path}" "{generated_path}" \\
+    -tile 1x -geometry +0+0 "{temp_dir}/montage_{index}.miff"
+"""
+
+    # Combine all montages into one image
+    bash_script_content += f"""
+# Combine all montages into one image
+montage "{temp_dir}/montage_*.miff" -tile x2 -geometry +2+2 -background '{label_background}' "{output_file}"
+
+# Cleanup
+rm -rf "{temp_dir}"
+echo "Combined image created at {output_file}"
+"""
+
+    bash_script_file = f"{temp_dir}/create_montage.sh"
+    with open(bash_script_file, 'w') as file:
+        file.write(bash_script_content)
+    
+    subprocess.run(['bash', bash_script_file], check=True)
+    print(f"Combined image created at {output_file}")
+
+
+def process_csv(csv_file_path, template_path, api_endpoint):
+    output_dir = create_timestamped_folder()
+    generated_images_dir = os.path.join(output_dir, "generated_images")
+    os.makedirs(generated_images_dir, exist_ok=True)
+    images_with_labels = []
+
+    df = pd.read_csv(csv_file_path)
+    for index, row in df.iterrows():
+        base64_image, dimensions = fetch_image_as_base64_and_dimensions(row['URL'])
+        if base64_image and dimensions:
+            width, height = dimensions
+            payload = prepare_payload(template_path, row['Prompt'], width, height, base64_image)
+            generated_image_base64 = call_api(api_endpoint, payload)
+
+            if generated_image_base64:
+                original_img_path = os.path.join(generated_images_dir, f"original_{index}.jpg")
+                generated_img_path = os.path.join(generated_images_dir, f"generated_{index}.jpg")
+
+                with open(original_img_path, "wb") as original_file:
+                    original_file.write(base64.b64decode(base64_image))
+                with open(generated_img_path, "wb") as generated_file:
+                    generated_file.write(base64.b64decode(generated_image_base64))
+
+                # Store file paths, not image objects
+                images_with_labels.append(((original_img_path, generated_img_path), row['Label']))
+
+    execute_bash_command(output_dir, images_with_labels)  # Corrected function call
+    logging.info("Image processing completed successfully.")
+
+if __name__ == "__main__":
+    process_csv('input.csv', 'payload.json', 'http://ptkwilliams.ddns.net:6969/sdapi/v1/img2img')
